@@ -1,0 +1,7 @@
+__pycache__/
+.mypy_cache/
+.pytest_cache/
+
+*.ts
+*.mp4
+*.m3u8
