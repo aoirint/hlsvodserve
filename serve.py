@@ -1,11 +1,16 @@
+from concurrent.futures import ThreadPoolExecutor, process
 from pathlib import Path
 import asyncio
+from asyncio.subprocess import Process
+import threading
+import time
+import schedule
 from hlsvodserve import convert_video_to_hls_vod
 from fastapi import FastAPI, BackgroundTasks, UploadFile
 from fastapi.responses import PlainTextResponse
 from uuid import uuid4, UUID
-from dataclasses import dataclass
-from typing import List, Literal
+from dataclasses import dataclass, field
+from typing import BinaryIO, Dict, List, Literal, Optional
 import shutil
 from datetime import datetime, timezone
 from pydantic import BaseModel, parse_obj_as
@@ -17,94 +22,235 @@ version = '0.0.0'
 app = FastAPI(
   version=version,
 )
-
-class Meta(BaseModel):
-  id: str
-  status: Literal['converting', 'completed']
-  timestamp: str
-  success: bool = False
-
 work_dir = Path(os.environ['WORK_DIR'])
 
-async def convert_video(task_id: UUID):
-  task_dir = get_task_dir(task_id)
-  video_file = get_video_file(task_id)
+class VideoConvertJobInfo(BaseModel):
+  id: str
+  status: Literal['converting', 'completed']
+  created_at: str
+  success: bool = False
 
-  result = await convert_video_to_hls_vod(
-    input_video_file=str(video_file),
-    output_playlist_file=str(task_dir / 'playlist.m3u8'),
-    output_stream_dir=str(task_dir),
-  )
+# Create job
+# Save uploaded video
+# Preprocess
+# FFmpeg
+# Postprocess
+# Upload
+# Clean job
+#   Clean uploaded video
+#   Clean converted video
+# Remove job log after 15 minutes (completed log?)
 
-  now = datetime.now(timezone.utc)
-  meta_file = get_meta_file(task_id)
-  meta_file.parent.mkdir(parents=True, exist_ok=True)
-  meta_file.write_text(
-    Meta(
-      id=str(task_id),
-      status='completed',
-      timestamp=now.isoformat(),
-      success=True,
-    ).json(ensure_ascii=False),
-    encoding='utf-8',
-  )
+@dataclass
+class VideoConvertError:
+  pass
 
-  # TODO: upload playlist/videos to object storage
+@dataclass
+class InvalidStateError(VideoConvertError):
+  message: str = None
 
-def get_task_dir(task_id: UUID) -> Path:
-  return work_dir / str(task_id)
+@dataclass
+class CreateJobResult:
+  job_id: UUID
 
-def get_video_file(task_id: UUID) -> Path:
-  return get_task_dir(task_id) / 'video.mp4'
+@dataclass
+class SaveUploadedVideoResult:
+  job_id: UUID
+  video_path: Path
 
-def get_meta_file(task_id: UUID) -> Path:
-  return get_task_dir(task_id) / 'meta.json'
+@dataclass
+class ConvertSavedVideoResult:
+  job_id: UUID
+  stream_playlist_path: Path
+  stream_filenames: List[str]
 
-# Add convert task
-@app.post('/create')
-async def create(file: UploadFile, background_tasks: BackgroundTasks):
-  task_id = uuid4()
-  now = datetime.now(timezone.utc)
+@dataclass
+class JobStatus:
+  id: UUID
+  created_at: datetime
+  job_dir_path: Path
+  video_path: Path
+  stream_dir_path: Path
+  stream_playlist_path: Path
+  stream_filenames: List[str] = None
+  video_created: bool = False
+  video_created_at: datetime = None
+  stream_created: bool = False
+  stream_created_at: datetime = None
+  upload_created: bool = False
+  upload_created_at: datetime = None
 
-  video_file = get_video_file(task_id)
-  video_file.parent.mkdir(parents=True)
-  with open(video_file, 'wb') as fp:
-    shutil.copyfileobj(file.file, fp)
+def datetime_utc_aware_now() -> datetime:
+  return datetime.now(timezone.utc)
 
-  meta_file = get_meta_file(task_id)
-  meta_file.write_text(
-    Meta(
-      id=str(task_id),
-      status='converting',
-      timestamp=now.isoformat(),
-      success=False,
-    ).json(ensure_ascii=False),
-    encoding='utf-8',
-  )
+@dataclass
+class JobManager:
+  job_ids: List[str] = field(default_factory=lambda: [])
+  job_status: Dict[str, JobStatus] = field(default_factory=lambda: {})
+
+  async def create_job(self) -> CreateJobResult:
+    now = datetime_utc_aware_now()
+    job_id = uuid4()
+    job_dir_path = work_dir / str(job_id)
+    stream_dir_path = job_dir_path
+
+    self.job_ids.append(job_id)
+    self.job_status[job_id] = JobStatus(
+      id=job_id,
+      created_at=now,
+      job_dir_path=job_dir_path,
+      video_path=job_dir_path / 'video.mp4',
+      stream_dir_path=stream_dir_path,
+      stream_playlist_path=stream_dir_path / 'playlist.m3u8',
+    )
+
+    return CreateJobResult(
+      job_id=job_id,
+    )
+
+  async def save_uploaded_video(self, job_id: UUID, uploaded_file: BinaryIO):
+    job = self.job_status[job_id]
+    video_path = job.video_path
+
+    video_path.parent.mkdir(parents=True)
+    with open(video_path, 'wb') as fp:
+      shutil.copyfileobj(uploaded_file.file, fp)
+
+    job.video_created = True
+    job.video_created_at = datetime_utc_aware_now()
+
+    # TODO: check the uploaded file is valid mp4 video or not
+    return SaveUploadedVideoResult(
+      job_id=job_id,
+      video_path=video_path,
+    )
+
+  async def convert_saved_video(self, job_id: UUID):
+    job = self.job_status[job_id]
+
+    job_dir_path = job.job_dir_path
+    video_path = job.video_path
+    if not job.video_created:
+      raise InvalidStateError(message='Video must be created')
+
+    result = await convert_video_to_hls_vod(
+      input_video_path=str(video_path),
+      output_playlist_path=str(job_dir_path / 'playlist.m3u8'),
+      output_stream_dir_path=str(job_dir_path),
+    )
+    if not result.success:
+      raise InvalidStateError(message=f'FFmpeg returncode={result.returncode}')
+
+    job.stream_created = True
+    job.stream_created_at = datetime_utc_aware_now()
+
+    return ConvertSavedVideoResult(
+      stream_playlist_path=result.playlist_file,
+      stream_filenames=result.stream_filenames,
+    )
+
+  async def upload_converted_video(self, job_id: UUID):
+    job = self.job_status[job_id]
+
+    if not job.stream_created:
+      raise InvalidStateError(message='Stream must be created')
+
+    # TODO: upload to object storage
+
+    job.upload_created = True
+    job.upload_created_at = datetime_utc_aware_now()
+
+    raise InvalidStateError(message='state must be')
+
+  async def clean_video(self, job_id: UUID):
+    job = self.job_status[job_id]
+    job_dir = job.job_dir_path
+
+    print(f'clean video {job_id}')
+    shutil.rmtree(job_dir)
+
+  async def remove_job(self, job_id: UUID):
+    # kill ffmpeg process if exist
+    await self.clean_video(job_id=job_id)
+
+    self.job_ids.remove(job_id)
+    del self.job_status[job_id]
+
+job_manager = JobManager()
+
+async def background_video_task(job_id: UUID):
+  job = job_manager.job_status[job_id]
+
+  await job_manager.convert_saved_video(job_id=job_id)
+
+  await job_manager.upload_converted_video(job_id=job_id)
+
+  await job_manager.clean_video(job_id=job_id)
+
+schedule_event = threading.Event()
+
+@app.on_event('startup')
+async def startup_schedule():
+  loop = asyncio.get_event_loop()
+  executor = ThreadPoolExecutor()
+
+  def loop_schedule(event):
+    while True:
+      if event.is_set():
+        break
+      schedule.run_pending()
+      time.sleep(1)
+
+    print('exit schedule')
+
+  loop.run_in_executor(executor, loop_schedule, schedule_event)
+
+@app.on_event('shutdown')
+async def shutdown_schedule():
+  schedule_event.set()
+
+@app.post('/jobs')
+async def create_job(file: UploadFile, background_tasks: BackgroundTasks):
+  result = await job_manager.create_job()
+  job_id = result.job_id
+
+  result = await job_manager.save_uploaded_video(job_id=job_id, uploaded_file=file)
 
   background_tasks.add_task(
-    convert_video,
-    task_id=task_id,
+    background_video_task,
+    job_id=job_id,
   )
 
+  def remove_job():
+    try:
+      async def remove_job_async():
+        print(f'removing job {job_id}')
+        await job_manager.remove_job(job_id=job_id)
+        print(f'removing done job {job_id}')
+
+      asyncio.run(remove_job_async())
+    finally:
+      print(f'removed job {job_id}')
+      return schedule.CancelJob
+
+  # FIXME: temporary implement only for test
+  schedule.every(10).seconds.do(remove_job)
+
   return {
-    'id': task_id,
+    'id': job_id,
   }
 
-@app.get('/status/{task_id}')
-async def status(task_id: UUID):
-  meta_file = get_meta_file(task_id)
-  meta = Meta.parse_file(meta_file)
-  return meta
+@app.get('/jobs/{job_id}')
+async def get_job_status(job_id: UUID) -> JobStatus:
+  return job_manager.job_status[job_id]
 
-@app.get('/')
-async def task_list():
-  # TODO: impl
-  return [
-    {
-      'id': '',
-    }
-  ]
+@app.get('/jobs')
+async def get_job_list():
+  job_list = []
+  for job_id in job_manager.job_ids:
+    job_list.append(job_manager.job_status[job_id])
+
+  return job_list
 
 @app.get('/version', response_class=PlainTextResponse)
 async def get_version():
