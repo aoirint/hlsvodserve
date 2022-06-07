@@ -217,6 +217,14 @@ def schedule_remove_job(job_id: UUID, minutes: int):
   print(f'removing job scheduled at {schedule_job.next_run.isoformat()}')
 
 @app.on_event('startup')
+async def startup_clean_work_dir():
+  print('cleanup work dir start')
+  for job_dir_path in work_dir.iterdir():
+    print(f'remove job dir {job_dir_path.name}')
+    shutil.rmtree(job_dir_path)
+  print('cleanup work dir done')
+
+@app.on_event('startup')
 async def startup_schedule():
   loop = asyncio.get_event_loop()
   executor = ThreadPoolExecutor()
