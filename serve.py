@@ -8,6 +8,7 @@ import schedule
 from hlsvodserve import convert_video_to_hls_vod
 from fastapi import FastAPI, BackgroundTasks, UploadFile
 from fastapi.responses import PlainTextResponse
+from fastapi.encoders import jsonable_encoder
 from uuid import uuid4, UUID
 from dataclasses import dataclass, field
 from typing import BinaryIO, Dict, List, Literal, Optional
@@ -74,11 +75,21 @@ class JobStatus:
   stream_playlist_path: Path
   stream_filenames: List[str] = None
   video_created: bool = False
-  video_created_at: datetime = None
+  video_created_at: Optional[datetime] = None
   stream_created: bool = False
-  stream_created_at: datetime = None
+  stream_created_at: Optional[datetime] = None
   upload_created: bool = False
-  upload_created_at: datetime = None
+  upload_created_at: Optional[datetime] = None
+
+class JobStatusResponseData(BaseModel):
+  id: UUID
+  created_at: datetime
+  video_created: bool = False
+  video_created_at: Optional[datetime] = None
+  stream_created: bool = False
+  stream_created_at: Optional[datetime] = None
+  upload_created: bool = False
+  upload_created_at: Optional[datetime] = None
 
 def datetime_utc_aware_now() -> datetime:
   return datetime.now(timezone.utc)
@@ -145,7 +156,8 @@ class JobManager:
     job.stream_created_at = datetime_utc_aware_now()
 
     return ConvertSavedVideoResult(
-      stream_playlist_path=result.playlist_file,
+      job_id=job_id,
+      stream_playlist_path=result.playlist_path,
       stream_filenames=result.stream_filenames,
     )
 
@@ -159,8 +171,6 @@ class JobManager:
 
     job.upload_created = True
     job.upload_created_at = datetime_utc_aware_now()
-
-    raise InvalidStateError(message='state must be')
 
   async def clean_video(self, job_id: UUID):
     job = self.job_status[job_id]
@@ -181,15 +191,16 @@ job_manager = JobManager()
 async def background_video_task(job_id: UUID):
   job = job_manager.job_status[job_id]
 
-  await job_manager.convert_saved_video(job_id=job_id)
-
-  await job_manager.upload_converted_video(job_id=job_id)
-
-  await job_manager.clean_video(job_id=job_id)
+  try:
+    await job_manager.convert_saved_video(job_id=job_id)
+    await job_manager.upload_converted_video(job_id=job_id)
+  finally:
+    await job_manager.clean_video(job_id=job_id)
+    schedule_remove_job(job_id=job_id, minutes=15)
 
 schedule_event = threading.Event()
 
-async def schedule_remove_job(job_id: UUID):
+def schedule_remove_job(job_id: UUID, minutes: int):
   def remove_job():
     try:
       async def remove_job_async():
@@ -202,7 +213,8 @@ async def schedule_remove_job(job_id: UUID):
       print(f'removed job {job_id}')
       return schedule.CancelJob
 
-  schedule.every(10).minutes.do(remove_job)
+  schedule_job = schedule.every(minutes).minutes.do(remove_job)
+  print(f'removing job scheduled at {schedule_job.next_run.isoformat()}')
 
 @app.on_event('startup')
 async def startup_schedule():
@@ -216,6 +228,9 @@ async def startup_schedule():
       schedule.run_pending()
       time.sleep(1)
 
+    print('run all existing scheduled jobs')
+    schedule.run_all()
+
     print('exit schedule')
 
   loop.run_in_executor(executor, loop_schedule, schedule_event)
@@ -224,7 +239,7 @@ async def startup_schedule():
 async def shutdown_schedule():
   schedule_event.set()
 
-@app.post('/jobs')
+@app.post('/jobs', response_model=JobStatusResponseData)
 async def create_job(file: UploadFile, background_tasks: BackgroundTasks):
   result = await job_manager.create_job()
   job_id = result.job_id
@@ -236,22 +251,20 @@ async def create_job(file: UploadFile, background_tasks: BackgroundTasks):
     job_id=job_id,
   )
 
-  return {
-    'id': job_id,
-  }
+  return jsonable_encoder(job_manager.job_status[job_id])
 
-@app.get('/jobs/{job_id}')
-async def get_job_status(job_id: UUID) -> JobStatus:
-  return job_manager.job_status[job_id]
+@app.get('/jobs/{job_id}', response_model=JobStatusResponseData)
+async def get_job_status(job_id: UUID):
+  return jsonable_encoder(job_manager.job_status[job_id])
 
-@app.get('/jobs')
+@app.get('/jobs', response_model=List[JobStatusResponseData])
 async def get_job_list():
-  job_list = []
+  job_list: List[JobStatusResponseData] = []
   for job_id in job_manager.job_ids:
     job_list.append(job_manager.job_status[job_id])
 
-  return job_list
+  return jsonable_encoder(job_list)
 
 @app.get('/version', response_class=PlainTextResponse)
-async def get_version():
+async def get_version() -> str:
   return version
