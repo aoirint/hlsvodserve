@@ -189,6 +189,21 @@ async def background_video_task(job_id: UUID):
 
 schedule_event = threading.Event()
 
+async def schedule_remove_job(job_id: UUID):
+  def remove_job():
+    try:
+      async def remove_job_async():
+        print(f'removing job {job_id}')
+        await job_manager.remove_job(job_id=job_id)
+        print(f'removing done job {job_id}')
+
+      asyncio.run(remove_job_async())
+    finally:
+      print(f'removed job {job_id}')
+      return schedule.CancelJob
+
+  schedule.every(10).minutes.do(remove_job)
+
 @app.on_event('startup')
 async def startup_schedule():
   loop = asyncio.get_event_loop()
@@ -220,21 +235,6 @@ async def create_job(file: UploadFile, background_tasks: BackgroundTasks):
     background_video_task,
     job_id=job_id,
   )
-
-  def remove_job():
-    try:
-      async def remove_job_async():
-        print(f'removing job {job_id}')
-        await job_manager.remove_job(job_id=job_id)
-        print(f'removing done job {job_id}')
-
-      asyncio.run(remove_job_async())
-    finally:
-      print(f'removed job {job_id}')
-      return schedule.CancelJob
-
-  # FIXME: temporary implement only for test
-  schedule.every(10).seconds.do(remove_job)
 
   return {
     'id': job_id,
