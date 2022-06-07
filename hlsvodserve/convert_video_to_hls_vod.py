@@ -4,6 +4,8 @@ from asyncio.subprocess import create_subprocess_exec, PIPE
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
 import re
+import tempfile
+import time
 from typing import List
 
 @dataclass
@@ -13,8 +15,7 @@ class ConvertVideoToHlsVodResult:
   stream_dir: str
   stream_filenames: List[str]
   returncode: int
-  stdout_lines: List[str]
-  stderr_lines: List[str]
+  report_lines: List[str]
 
 async def convert_video_to_hls_vod(
   input_video_file: str,
@@ -32,6 +33,10 @@ async def convert_video_to_hls_vod(
   hls_time: int = 9
 
   hls_segment_filename: Path = output_stream_dir / '%d.ts'
+
+  report_tempfile = tempfile.NamedTemporaryFile(mode='w+', encoding='utf-8')
+  report_loglevel = 32 # 32: info, 48: debug
+  report = f'file={report_tempfile.name}:level={report_loglevel}'
 
   command = [
     'ffmpeg',
@@ -52,45 +57,38 @@ async def convert_video_to_hls_vod(
     str(hls_segment_filename),
     '-start_number',
     '1',
+    '-report',
     str(output_playlist_file),
   ]
 
   proc = await create_subprocess_exec(
     command[0],
     *command[1:],
-    stdout=PIPE,
-    stderr=PIPE,
+    env={
+      'FFREPORT': report,
+    },
   )
 
   loop = asyncio.get_event_loop()
   executor = ThreadPoolExecutor()
 
-  stdout_lines = []
-  stderr_lines = []
-  def read_stdout(stdout):
+  report_lines = []
+  def read_report(report_file):
+    report_file.seek(0)
     while True:
-      line = asyncio.run_coroutine_threadsafe(stdout.readline(), loop).result()
-      line_text = line.decode('utf-8').strip()
-      line_text = re.sub(r'[\u0001-\u001F]', '', line_text)
-      if not line_text:
-        break
-      stdout_lines.append(line_text)
-      print(f'STDOUT: {line_text}', flush=True)
-    print('stdout closed') # closed when process exited
+        line = report_file.readline()
+        if len(line) == 0: # EOF
+          if proc.returncode is not None: # process closed and EOF
+            break
+          time.sleep(0.1)
+          continue # for next line written
+        if line.endswith('\n'):
+          line = line[:-1] # strip linebreak
+        report_lines.append(line)
+        print(f'REPORT: {line}', flush=True)
+    print('report closed') # closed when process exited
 
-  def read_stderr(stderr):
-    while True:
-      line = asyncio.run_coroutine_threadsafe(stderr.readline(), loop).result()
-      line_text = line.decode('utf-8').strip()
-      line_text = re.sub(r'[\u0001-\u001F]', '', line_text)
-      if not line_text:
-        break
-      stderr_lines.append(line_text)
-      print(f'STDERR: {line_text}', flush=True)
-    print('stderr closed') # closed when process exited
-
-  loop.run_in_executor(executor, read_stdout, proc.stdout)
-  loop.run_in_executor(executor, read_stderr, proc.stderr)
+  loop.run_in_executor(executor, read_report, report_tempfile)
 
   returncode = await proc.wait()
   # stdout, stderr may be not closed
@@ -117,6 +115,5 @@ async def convert_video_to_hls_vod(
     stream_dir=str(output_stream_dir),
     stream_filenames=stream_filenames,
     returncode=returncode,
-    stdout_lines=stdout_lines,
-    stderr_lines=stderr_lines,
+    report_lines=report_lines,
   )
