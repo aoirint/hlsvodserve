@@ -3,6 +3,7 @@ import asyncio
 from asyncio.subprocess import create_subprocess_exec, PIPE
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
+import re
 from typing import List
 
 @dataclass
@@ -69,9 +70,10 @@ async def convert_video_to_hls_vod(
   def read_stdout(stdout):
     while True:
       line = asyncio.run_coroutine_threadsafe(stdout.readline(), loop).result()
-      if not line:
-        break
       line_text = line.decode('utf-8').strip()
+      line_text = re.sub(r'[\u0001-\u001F]', '', line_text)
+      if not line_text:
+        break
       stdout_lines.append(line_text)
       print(f'STDOUT: {line_text}', flush=True)
     print('stdout closed') # closed when process exited
@@ -79,9 +81,10 @@ async def convert_video_to_hls_vod(
   def read_stderr(stderr):
     while True:
       line = asyncio.run_coroutine_threadsafe(stderr.readline(), loop).result()
-      if not line:
-        break
       line_text = line.decode('utf-8').strip()
+      line_text = re.sub(r'[\u0001-\u001F]', '', line_text)
+      if not line_text:
+        break
       stderr_lines.append(line_text)
       print(f'STDERR: {line_text}', flush=True)
     print('stderr closed') # closed when process exited
