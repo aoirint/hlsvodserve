@@ -15,6 +15,8 @@ from typing import BinaryIO, Dict, List, Literal, Optional
 import shutil
 from datetime import datetime, timezone
 from pydantic import BaseModel, parse_obj_as
+import boto3
+from botocore.config import Config
 import os
 from dotenv import load_dotenv
 load_dotenv()
@@ -23,7 +25,24 @@ version = '0.0.0'
 app = FastAPI(
   version=version,
 )
+
 work_dir = Path(os.environ['WORK_DIR'])
+
+aws_endpoint_url = os.environ['AWS_ENDPOINT_URL']
+aws_region = os.environ['AWS_REGION']
+aws_access_key_id = os.environ['AWS_ACCESS_KEY_ID']
+aws_secret_access_key = os.environ['AWS_SECRET_ACCESS_KEY']
+
+s3_config = Config(
+  region_name=aws_region,
+)
+s3 = boto3.resource(
+  's3',
+  endpoint_url=aws_endpoint_url,
+  aws_access_key_id=aws_access_key_id,
+  aws_secret_access_key=aws_secret_access_key,
+  config=s3_config,
+)
 
 class VideoConvertJobInfo(BaseModel):
   id: str
@@ -215,6 +234,10 @@ def schedule_remove_job(job_id: UUID, minutes: int):
 
   schedule_job = schedule.every(minutes).minutes.do(remove_job)
   print(f'removing job scheduled at {schedule_job.next_run.isoformat()}')
+
+@app.on_event('startup')
+async def startup_test():
+  s3.Bucket('hlsvodserve').put_object(Key='hoge.txt', Body=b'ABCDEF')
 
 @app.on_event('startup')
 async def startup_clean_work_dir():
