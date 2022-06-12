@@ -1,6 +1,6 @@
 from pathlib import Path
 import asyncio
-from hlsvodserve import convert_video_to_hls_vod
+from sirasu import convert_video_to_hls_vod
 
 async def main(
   video_file: str,
