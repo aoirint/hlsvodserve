@@ -1,4 +1,4 @@
-# hlsvodserve
+# sirasu
 ## Commands
 
 ```shell
@@ -26,7 +26,7 @@ docker-compose -f docker-compose.dev.yml logs -f
         "s3:GetObject"
       ],
       "Resource": [
-        "arn:aws:s3:::hlsvodserve/*"
+        "arn:aws:s3:::sirasu/*"
       ]
     }
   ]
@@ -45,7 +45,7 @@ docker-compose -f docker-compose.dev.yml logs -f
         "s3:DeleteObject",
         "s3:PutObject"
       ],
-      "Resource": "arn:aws:s3:::hlsvodserve/*"
+      "Resource": "arn:aws:s3:::sirasu/*"
     }
   ]
 }

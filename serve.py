@@ -5,7 +5,7 @@ from asyncio.subprocess import Process
 import threading
 import time
 import schedule
-from hlsvodserve import convert_video_to_hls_vod
+from sirasu import convert_video_to_hls_vod
 from fastapi import FastAPI, BackgroundTasks, UploadFile
 from fastapi.responses import PlainTextResponse
 from fastapi.encoders import jsonable_encoder
@@ -237,7 +237,7 @@ def schedule_remove_job(job_id: UUID, minutes: int):
 
 @app.on_event('startup')
 async def startup_test():
-  s3.Bucket('hlsvodserve').put_object(Key='hoge.txt', Body=b'ABCDEF')
+  s3.Bucket('sirasu').put_object(Key='hoge.txt', Body=b'ABCDEF')
 
 @app.on_event('startup')
 async def startup_clean_work_dir():

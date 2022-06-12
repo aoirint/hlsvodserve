@@ -14,7 +14,7 @@ services:
     volumes:
       - "./serve.py:/code/serve.py"
       - "./convert_video_to_hls_vod.py:/code/convert_video_to_hls_vod.py"
-      - "./hlsvodserve:/code/hlsvodserve"
+      - "./sirasu:/code/sirasu"
       - "${WORK_DIR}:/work"
     healthcheck:
       test: ["CMD", "curl", "-f", "http://localhost:8000/version"]

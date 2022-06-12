@@ -16,7 +16,7 @@ ADD ./requirements.txt /tmp/requirements.txt
 RUN gosu user pip3 install --no-cache-dir -r /tmp/requirements.txt
 
 WORKDIR /code
-ADD ./hlsvodserve /code/hlsvodserve
+ADD ./sirasu /code/sirasu
 ADD ./serve.py /code/serve.py
 ADD ./convert_video_to_hls_vod.py /code/convert_video_to_hls_vod.py
 
